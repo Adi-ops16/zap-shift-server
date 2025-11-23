@@ -11,7 +11,7 @@ const port = process.env.PORT || 3000
 // firebase service account
 const admin = require("firebase-admin");
 
-var serviceAccount = require("./firebaseSDK.json");
+var serviceAccount = require("./adminSDK.json");
 
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
