@@ -76,11 +76,50 @@ async function run() {
         const usersCollection = db.collection('users')
         const ridersCollection = db.collection('riders')
 
+        // middleware with database access
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.decoded_email;
+            const query = { email }
+            const user = await usersCollection.findOne(query)
+            if (!user || user.role !== 'admin') {
+                return res.status(403).json({ message: 'Forbidden access' })
+            }
+            next()
+        }
+
         app.get('/', (req, res) => {
             res.send("zapShift server is running")
         })
 
         // user related api
+
+        app.get('/users', verifyFirebaseToken, async (req, res) => {
+            const search = req.query.search;
+            const query = {};
+
+            if (search) {
+                // query.displayName = { $regex: search, $options: 'i' }
+                query.$or = [
+                    { displayName: { $regex: search, $options: 'i' } },
+                    { email: { $regex: search, $options: 'i' } },
+                ]
+            }
+
+            const result = await usersCollection.find(query).sort({ created_at: -1 }).limit(10).toArray()
+            res.send(result)
+        })
+
+        app.get('/users/:id', async (req, res) => {
+
+        })
+
+        app.get('/users/:email/role', async (req, res) => {
+            const email = req.params.email;
+            const query = { email: email }
+            const user = await usersCollection.findOne(query)
+
+            res.send({ role: user.role || 'user' })
+        })
 
         app.post('/users', async (req, res) => {
             const user = req.body;
@@ -100,15 +139,37 @@ async function run() {
             res.send(result)
         })
 
+        app.patch('/users/:id/role', verifyFirebaseToken, verifyAdmin, async (req, res) => {
+            const id = req.params.id;
+            const roleInfo = req.body;
+            const query = { _id: new ObjectId(id) }
+            const updatedDoc = {
+                $set: {
+                    role: roleInfo.role
+                }
+            }
+
+            const result = await usersCollection.updateOne(query, updatedDoc)
+
+            res.send(result)
+        })
+
         // product related api
 
         app.get("/parcels", async (req, res) => {
             try {
                 const query = {}
-                const { email } = req.query
+                const email = req.query.email
+                const deliveryStatus = req.query.deliveryStatus;
+
                 if (email) {
-                    req.senderEmail = email
+                    query.senderEmail = email
                 }
+
+                if (deliveryStatus) {
+                    query.delivery_status = deliveryStatus
+                }
+
                 const options = { sort: { created_at: -1 } }
                 const result = await parcelsCollection.find(query, options).toArray()
                 res.status(200).json({
@@ -153,6 +214,33 @@ async function run() {
                     message: "couldn't send parcel to database"
                 })
             }
+        })
+
+        app.patch('/parcels/:id', async (req, res) => {
+            const { riderId, riderName, riderEmail } = req.body;
+            const id = req.params.id;
+            const query = {
+                _id: new ObjectId(id)
+            }
+            const updatedDoc = {
+                $set: {
+                    delivery_status: 'driver_assigned',
+                    riderName: riderName,
+                    riderEmail: riderEmail,
+                }
+            }
+
+            const result = await parcelsCollection.updateOne(query, updatedDoc)
+
+            const riderQuery = { _id: new ObjectId(riderId) }
+            const riderUpdatedDoc = {
+                $set: {
+                    workStatus: 'in_delivery'
+                }
+            }
+            const riderResult = await ridersCollection.updateOne(riderQuery, riderUpdatedDoc)
+
+            res.send(riderResult)
         })
 
 
@@ -260,11 +348,13 @@ async function run() {
                     const update = {
                         $set: {
                             paymentStatus: 'paid',
-                            trackingId: trackingId
+                            trackingId: trackingId,
+                            delivery_status: 'pending-pickup'
                         }
                     }
 
                     const result = await parcelsCollection.updateOne(query, update)
+
                     const payment = {
                         amount: session.amount_total / 100,
                         currency: session.currency,
@@ -300,15 +390,21 @@ async function run() {
         // riders related apis
 
         app.get('/riders', async (req, res) => {
+            const { status, district, workStatus } = req.query
             const query = {}
-            if (req.query.status) {
-                query.status = req.query.status
+            if (status) {
+                query.status = status
+            }
+            if (district) {
+                query.riderDistrict = district
+            }
+            if (workStatus) {
+                query.workStatus = workStatus
             }
             const result = await ridersCollection.find(query).toArray()
 
             res.send(result)
         })
-
 
         app.post('/riders', async (req, res) => {
             const rider = req.body;
@@ -320,12 +416,13 @@ async function run() {
             res.send(result)
         })
 
-        app.patch('/riders/:id', async (req, res) => {
+        app.patch('/riders/:id', verifyFirebaseToken, verifyAdmin, async (req, res) => {
             const status = req.body.status
             const id = req.params.id
             const updatedDoc = {
                 $set: {
-                    status: status
+                    status: status,
+                    workStatus: 'available'
                 }
             }
             const query = {
