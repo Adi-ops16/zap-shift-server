@@ -11,7 +11,8 @@ const port = process.env.PORT || 3000
 // firebase service account
 const admin = require("firebase-admin");
 
-var serviceAccount = require("./adminSDK.json");
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
@@ -68,7 +69,7 @@ const client = new MongoClient(uri, {
 
 async function run() {
     try {
-        await client.connect();
+        // await client.connect();
 
         const db = client.db("zap_shift_db")
         const parcelsCollection = db.collection("parcels")
@@ -83,6 +84,16 @@ async function run() {
             const query = { email }
             const user = await usersCollection.findOne(query)
             if (!user || user.role !== 'admin') {
+                return res.status(403).json({ message: 'Forbidden access' })
+            }
+            next()
+        }
+
+        const verifyRider = async (req, res, next) => {
+            const email = req.decoded_email;
+            const query = { email }
+            const user = await usersCollection.findOne(query)
+            if (!user || user.role !== 'rider') {
                 return res.status(403).json({ message: 'Forbidden access' })
             }
             next()
@@ -224,6 +235,26 @@ async function run() {
             const query = { _id: new ObjectId(id) }
             const result = await parcelsCollection.findOne(query)
             res.status(200).json(result)
+        })
+
+        // aggregation pipeline
+        app.get('/parcels/delivery-status/stats', async (req, res) => {
+            const pipeline = [
+                {
+                    $group: {
+                        _id: '$delivery_status',
+                        count: { $sum: 1 }
+                    }
+                },
+                {
+                    $project: {
+                        status: '$_id',
+                        count: 1
+                    }
+                }
+            ]
+            const result = await parcelsCollection.aggregate(pipeline).toArray()
+            res.send(result)
         })
 
         app.post('/parcel', async (req, res) => {
@@ -479,6 +510,54 @@ async function run() {
             res.send(result)
         })
 
+        // aggregate pipeline
+        app.get('/riders/delivery-per-day', async (req, res) => {
+            const email = req.query.email;
+            const pipeline = [
+                {
+                    $match: {
+                        riderEmail: email,
+                        delivery_status: 'parcel_delivered'
+                    }
+                },
+                {
+                    $lookup: {
+                        from: 'trackings',
+                        localField: 'trackingId',
+                        foreignField: 'trackingId',
+                        as: 'parcel_trackings'
+                    }
+                },
+                {
+                    $unwind: '$parcel_trackings'
+                },
+                {
+                    $match: {
+                        'parcel_trackings.status': 'parcel_delivered'
+                    }
+                },
+                {
+                    $addFields: {
+                        deliveryDay: {
+                            $dateToString: {
+                                format: '%Y-%m-%d',
+                                date: '$parcel_trackings.created_at'
+                            }
+                        }
+                    }
+                },
+                {
+                    $group: {
+                        _id: '$deliveryDay',
+                        deliveredCount: { $sum: 1 }
+                    }
+                }
+            ]
+
+            const result = await parcelsCollection.aggregate(pipeline).toArray()
+            res.send(result)
+        })
+
         app.post('/riders', async (req, res) => {
             const rider = req.body;
             rider.status = 'pending'
@@ -538,8 +617,8 @@ async function run() {
         })
 
 
-        await client.db("admin").command({ ping: 1 });
-        console.log("Pinged your deployment. You successfully connected to MongoDB!");
+        // await client.db("admin").command({ ping: 1 });
+        // console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
     } finally {
 
@@ -550,5 +629,3 @@ run().catch(console.dir);
 app.listen(port, () => {
     console.log("zapShift server is running on port:", port);
 })
-
-
